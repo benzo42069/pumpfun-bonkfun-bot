@@ -14,6 +14,7 @@ class ExitReason(Enum):
 
     TAKE_PROFIT = "take_profit"
     STOP_LOSS = "stop_loss"
+    TRAILING_STOP = "trailing_stop"
     MAX_HOLD_TIME = "max_hold_time"
     MANUAL = "manual"
 
@@ -34,6 +35,9 @@ class Position:
     # Exit conditions
     take_profit_price: float | None = None
     stop_loss_price: float | None = None
+    trailing_stop_percentage: float | None = None
+    trailing_stop_price: float | None = None
+    peak_price: float | None = None
     max_hold_time: int | None = None  # seconds
 
     # Status
@@ -51,6 +55,7 @@ class Position:
         quantity: float,
         take_profit_percentage: float | None = None,
         stop_loss_percentage: float | None = None,
+        trailing_stop_percentage: float | None = None,
         max_hold_time: int | None = None,
     ) -> "Position":
         """Create a position from a successful buy transaction.
@@ -62,6 +67,7 @@ class Position:
             quantity: Quantity of tokens purchased
             take_profit_percentage: Take profit percentage (0.5 = 50% profit)
             stop_loss_percentage: Stop loss percentage (0.2 = 20% loss)
+            trailing_stop_percentage: Trailing stop percentage (0.2 = 20% below peak)
             max_hold_time: Maximum hold time in seconds
 
         Returns:
@@ -75,6 +81,12 @@ class Position:
         if stop_loss_percentage is not None:
             stop_loss_price = entry_price * (1 - stop_loss_percentage)
 
+        trailing_stop_price = None
+        peak_price = None
+        if trailing_stop_percentage is not None:
+            peak_price = entry_price
+            trailing_stop_price = entry_price * (1 - trailing_stop_percentage)
+
         return cls(
             mint=mint,
             symbol=symbol,
@@ -83,8 +95,20 @@ class Position:
             entry_time=datetime.utcnow(),
             take_profit_price=take_profit_price,
             stop_loss_price=stop_loss_price,
+            trailing_stop_percentage=trailing_stop_percentage,
+            trailing_stop_price=trailing_stop_price,
+            peak_price=peak_price,
             max_hold_time=max_hold_time,
         )
+
+    def update_trailing_stop(self, current_price: float) -> None:
+        """Update trailing stop state based on the latest observed price."""
+        if self.trailing_stop_percentage is None:
+            return
+
+        if self.peak_price is None or current_price > self.peak_price:
+            self.peak_price = current_price
+            self.trailing_stop_price = current_price * (1 - self.trailing_stop_percentage)
 
     def should_exit(self, current_price: float) -> tuple[bool, ExitReason | None]:
         """Check if position should be exited based on current conditions.
@@ -98,6 +122,8 @@ class Position:
         if not self.is_active:
             return False, None
 
+        self.update_trailing_stop(current_price)
+
         # Check take profit
         if self.take_profit_price and current_price >= self.take_profit_price:
             return True, ExitReason.TAKE_PROFIT
@@ -105,6 +131,10 @@ class Position:
         # Check stop loss
         if self.stop_loss_price and current_price <= self.stop_loss_price:
             return True, ExitReason.STOP_LOSS
+
+        # Check trailing stop
+        if self.trailing_stop_price and current_price <= self.trailing_stop_price:
+            return True, ExitReason.TRAILING_STOP
 
         # Check max hold time
         if self.max_hold_time:
@@ -153,6 +183,8 @@ class Position:
             "price_change_pct": price_change_pct,
             "unrealized_pnl_sol": unrealized_pnl,
             "quantity": self.quantity,
+            "peak_price": self.peak_price,
+            "trailing_stop_price": self.trailing_stop_price,
         }
 
     def __str__(self) -> str:
